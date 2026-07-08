@@ -1,0 +1,46 @@
+# Copy this file to config.toml and fill in your values.
+# config.toml is gitignored so your key stays local.
+
+[riot]
+# Get a development key at https://developer.riotgames.com (24h, free).
+# A single key covers all accounts under your Riot developer registration.
+api_key = "RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+# Routing region for account-v1 (americas / europe / asia / sea)
+routing = "americas"
+# Platform for match data (la1 / la2 / na1 / euw1 / kr / ...)
+platform = "la1"
+
+# One [[riot.accounts]] block per account you play on.
+# Optional `cohort` tags the elo bracket — used in reports to avoid
+# mixing baselines across very different opponent skill levels.
+# Values: iron, bronze, silver, gold, platinum, emerald, diamond,
+# master, grandmaster, challenger.
+[[riot.accounts]]
+game_name = "MyName"
+tag_line = "LAN1"
+cohort = "platinum"
+
+# [[riot.accounts]]
+# game_name = "MySmurf"
+# tag_line = "LAN2"
+# cohort = "silver"
+
+[paths]
+# Where the recorder writes raw JSONs from Live Client polling.
+data_raw = "D:/projects/lol-coach/data/raw"
+# Where the SQLite DB lives.
+sqlite_db = "D:/projects/lol-coach/data/lol_coach.db"
+# Folders to scan for Replays.lol .mp4 clips. List form because Replays.lol
+# can revert its storage path back to the legacy Windows default
+# (C:/Users/<user>/Videos/Overwolf/Replays.lol) on its own. Including both
+# means we always find recordings no matter which one is active.
+replays_lol_dirs = [
+    "D:/outplayed/Replays.lol",
+    "C:/Users/<user>/Videos/Overwolf/Replays.lol",
+]
+# Optional. Set to "" if you don't use Outplayed.
+outplayed_dir = "D:/outplayed/Outplayed/League of Legends"
+
+[recorder]
+# How often to poll Live Client (seconds). 1.0 = once per second.
+poll_interval_s = 1.0

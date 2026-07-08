@@ -1,0 +1,5 @@
+# Development/test dependencies only. The RUNTIME stays Python stdlib + requests
+# (see ARCHITECTURE.md "Stack") — nothing here is imported by the app.
+# Install: .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+# Run:     .venv\Scripts\python.exe -m pytest
+pytest>=9,<10

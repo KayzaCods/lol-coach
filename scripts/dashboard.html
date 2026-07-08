@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lol-coach</title>
+<style>
+:root{
+  --color-text-primary:#e8e8ea;
+  --color-text-secondary:#b6b6bd;
+  --color-text-tertiary:#85858f;
+  --color-text-success:#28b487;
+  --color-text-danger:#e85b5a;
+  --color-text-info:#4a9be8;
+  --color-text-warning:#ef9f27;
+  --color-background-primary:#0e0e11;
+  --color-background-secondary:#17171b;
+  --color-background-tertiary:#202027;
+  --color-background-success:rgba(40,180,135,0.13);
+  --color-background-danger:rgba(232,91,90,0.13);
+  --color-background-info:rgba(74,155,232,0.14);
+  --color-background-warning:rgba(239,159,39,0.13);
+  --color-border-secondary:#3a3a44;
+  --color-border-tertiary:#26262d;
+  --border-radius-md:6px;
+  --border-radius-lg:10px;
+  --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--color-background-primary);color:var(--color-text-primary);
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+body{padding:24px;max-width:1020px;margin:0 auto}
+button{cursor:pointer;font-family:inherit;background:transparent;border:none;outline:none;color:inherit}
+button:focus-visible{box-shadow:0 0 0 2px var(--color-border-secondary)}
+video{width:100%;border-radius:var(--border-radius-md);background:#000;margin-top:10px;max-height:420px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.muted{color:var(--color-text-tertiary)}
+</style>
+</head>
+<body>
+<h2 class="sr-only">Dashboard de coaching personal para League of Legends</h2>
+<div id="root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>
+const {useState, useEffect, useRef} = React;
+const h = React.createElement;
+
+const DET = {
+  death_v1:               {label:"Muerte",   acc:"#E24B4A"},
+  trade_v1:               {label:"Trade",    acc:"#EF9F27"},
+  tempo_v1:               {label:"Tempo",    acc:"#378ADD"},
+  objective_readiness_v1: {label:"Objetivo", acc:"#1D9E75"},
+};
+
+const GLYPH = {down:"▾",up:"▴",check:"✓",x:"✕",alert:"⚠",play:"▶",dot:"●",approx:"≈"};
+function Ico({name,size,color}){
+  return h("span",{style:{fontSize:size||13,color:color||"inherit",lineHeight:1,display:"inline-block"},"aria-hidden":"true"}, GLYPH[name]||"");
+}
+
+function evColor(v){
+  if(v==null) return "var(--color-text-tertiary)";
+  if(v>=0.65) return "var(--color-text-success)";
+  if(v>=0.40) return "#EF9F27";
+  return "var(--color-text-danger)";
+}
+function evBg(v){
+  if(v==null) return "var(--color-background-tertiary)";
+  if(v>=0.65) return "var(--color-background-success)";
+  if(v>=0.40) return "rgba(239,159,39,0.12)";
+  return "var(--color-background-danger)";
+}
+function trendInfo(t){
+  if(t==="worsening") return {icon:"up",label:"Empeorando",c:"#E24B4A"};
+  if(t==="improving") return {icon:"down",label:"Mejorando",c:"#1D9E75"};
+  return {icon:"dot",label:"Estable",c:"#EF9F27"};
+}
+const fmtEV = v => v==null ? "—" : v.toFixed(2);
+
+function sBadge(active){
+  return {
+    fontSize:11, padding:"5px 12px", borderRadius:"var(--border-radius-md)",
+    border: active ? "0.5px solid var(--color-border-secondary)" : "0.5px solid transparent",
+    background: active ? "var(--color-background-secondary)" : "transparent",
+    color: active ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+  };
+}
+
+const FB_BTNS = [
+  {key:"agree",      label:"acierta",        icon:"check"},
+  {key:"equivalent", label:"≈ equivalentes", icon:"approx"},
+  {key:"disagree",   label:"se equivoca",    icon:"x"},
+];
+const MARK_TYPE_BTNS = [
+  {key:"decision",        label:"decisión"},
+  {key:"execution",       label:"ejecución"},
+  {key:"mixed",           label:"mixta"},
+  {key:"missing_context", label:"contexto faltante"},
+  {key:"wrong_moment",    label:"momento equivocado"},
+];
+// Friendly labels for cohorts; unknown cohorts fall back to their raw key.
+const COHORT_LABELS = {master:"main · master", emerald:"smurf · emerald", challenger:"reference · challenger"};
+
+function powerColor(idx){
+  if(idx>=0.55) return "var(--color-text-success)";
+  if(idx<=0.45) return "var(--color-text-danger)";
+  return "#EF9F27";
+}
+// HEF: composite, auditable decision-quality score with its breakdown — the
+// weighted terms (power/info/wave/action-fit) and the penalties Π applied.
+const HEF_TERM_LABELS = {power:"Poder", info:"Info / visión", wave:"Oleada", action_fit:"Acción ↔ estado"};
+function HefPanel({hef}){
+  const c = powerColor(hef.score);
+  const terms = hef.terms || {}, weights = hef.weights || {}, pen = hef.penalties || {};
+  return h("div", {style:{marginBottom:14}},
+    h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}},
+      h("span", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)"}}, "Evaluación (HEF)"),
+      h("span", {style:{fontSize:13,fontFamily:"var(--font-mono)",fontWeight:600,color:c}}, `${hef.score.toFixed(2)} · ${hef.label||""}`)
+    ),
+    ...Object.keys(terms).map(k => h("div", {key:k, style:{display:"flex",alignItems:"center",gap:8,marginBottom:3}},
+      h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",width:92,flexShrink:0}}, HEF_TERM_LABELS[k]||k),
+      h("div", {style:{flex:1,height:5,borderRadius:3,background:"var(--color-background-tertiary)",overflow:"hidden"}},
+        h("div", {style:{height:"100%",width:`${terms[k]*100}%`,background:powerColor(terms[k])}})),
+      h("span", {style:{fontSize:10,fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)",width:62,textAlign:"right"}}, `${terms[k].toFixed(2)} ·ω${weights[k]||0}`)
+    )),
+    Object.keys(pen).length>0 && h("div", {style:{display:"flex",flexWrap:"wrap",gap:4,marginTop:6,alignItems:"center"}},
+      h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)"}}, `base ${hef.base!=null?hef.base.toFixed(2):"—"} −`),
+      ...Object.entries(pen).map(([k,v]) => h("span", {key:k, style:{fontSize:10,color:"var(--color-text-danger)",background:"var(--color-background-danger)",borderRadius:4,padding:"1px 6px"}}, `${k.replace(/_/g," ")} −${v}`))
+    )
+  );
+}
+
+function DecisionCard({d, exp, onToggle, fb, onFb, clipOpen, onClip, onSave, domId, highlight}){
+  const det = DET[d.detector] || {label:d.detector, acc:"#888"};
+  const [note, setNote] = useState(d.feedback_note || "");
+  const [best, setBest] = useState(d.best_option==null ? null : d.best_option);
+  const [markType, setMarkType] = useState(d.mark_type || null);
+  const [saved, setSaved] = useState(false);
+  // Near-tie: when the top two options are within ~0.10 EV they're practically
+  // equivalent — the system isn't really "recommending" one. Surfacing this stops
+  // the user from marking "se equivoca" just for picking their own valid option.
+  const _evs = (d.options||[]).map(o=>o.ev||0).slice().sort((a,b)=>b-a);
+  const tieGap = _evs.length>=2 ? Math.round((_evs[0]-_evs[1])*100)/100 : null;
+  const isTie = tieGap!=null && tieGap<=0.10;
+  return h("div", {id: domId, style:{
+      border:"0.5px solid var(--color-border-tertiary)",
+      borderLeft:`3px solid ${det.acc}`,
+      borderRadius:"0 var(--border-radius-lg) var(--border-radius-lg) 0",
+      marginBottom:8, overflow:"hidden", background:"var(--color-background-secondary)",
+      boxShadow: highlight ? "0 0 0 2px var(--color-text-info)" : undefined,
+    }},
+    h("div", {onClick:onToggle, style:{padding:"10px 14px",cursor:"pointer",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+      h("span", {style:{fontSize:11,fontWeight:600,color:"#0e0e11",background:det.acc,padding:"2px 9px",borderRadius:"var(--border-radius-md)"}}, det.label),
+      h("span", {style:{fontSize:13,fontWeight:500}}, d.champion),
+      d.role && h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",background:"var(--color-background-tertiary)",padding:"1px 6px",borderRadius:"var(--border-radius-md)"}}, ROLE_L[d.role]||d.role),
+      h("span", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, `${d.time} · ${d.date}`),
+      h("div", {style:{marginLeft:"auto",display:"flex",alignItems:"center",gap:7}},
+        fb && (()=>{ const m = fb==="disagree"?{c:"danger",ic:"x",t:"se equivoca"}:fb==="equivalent"?{c:"info",ic:"approx",t:"≈ equiv"}:{c:"success",ic:"check",t:"acierta"};
+          return h("span", {title:"Marcaste: "+m.t,
+            style:{fontSize:10,fontWeight:700,display:"flex",alignItems:"center",gap:3,padding:"2px 7px",borderRadius:"var(--border-radius-md)",
+              color:`var(--color-text-${m.c})`, background:`var(--color-background-${m.c})`}},
+            h(Ico,{name:m.ic,size:11}), m.t); })(),
+        d.reward_score!=null && h("span", {title:`reward ${d.reward_score>0?"+":""}${d.reward_score}`,
+          style:{width:9,height:9,borderRadius:"50%",flexShrink:0,
+            background:d.reward_score>0?"var(--color-text-success)":(d.reward_score<0?"var(--color-text-danger)":"#5a5a66")}}),
+        d.hef && d.hef.score!=null && h("span", {style:{fontSize:11,fontFamily:"var(--font-mono)",fontWeight:600,color:powerColor(d.hef.score),background:evBg(d.hef.score),padding:"3px 10px",borderRadius:"var(--border-radius-md)"}}, `HEF ${d.hef.score.toFixed(2)}`),
+        h(Ico, {name:exp?"up":"down",size:13,color:"var(--color-text-tertiary)"})
+      )
+    ),
+    h("div", {style:{padding:"0 14px 11px",fontSize:12.5,color:"var(--color-text-primary)"}}, d.moment),
+    exp && h("div", {style:{borderTop:"0.5px solid var(--color-border-tertiary)",padding:"14px"}},
+      d.outcome && h("p", {style:{fontSize:12,color:"var(--color-text-secondary)",marginBottom:14}}, d.outcome),
+      d.hef && d.hef.score!=null && h(HefPanel, {hef:d.hef}),
+      h("p", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:8}}, "Contexto"),
+      h("div", {style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:"6px 16px",padding:"10px 12px",background:"var(--color-background-tertiary)",borderRadius:"var(--border-radius-md)",marginBottom:14}},
+        ...Object.entries(d.ctx).map(([k,v]) =>
+          h("div", {key:k},
+            h("div", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginBottom:2}}, k),
+            h("div", {style:{fontSize:12,fontFamily:"var(--font-mono)",fontWeight:500}}, String(v))
+          )
+        )
+      ),
+      h("p", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:8}}, "Opciones"),
+      isTie && h("div", {style:{fontSize:11,lineHeight:1.5,color:"var(--color-text-info)",background:"var(--color-background-info)",border:"0.5px solid var(--color-text-info)",borderRadius:"var(--border-radius-md)",padding:"6px 9px",marginBottom:8,display:"flex",alignItems:"flex-start",gap:6}},
+        h(Ico,{name:"approx",size:12}),
+        h("span",{}, `Decisión cercana: las dos mejores opciones son prácticamente equivalentes (Δ ${tieGap.toFixed(2)}). Elegir la tuya no es un error — si crees que ambas valen, marca "≈ equivalentes" en vez de "se equivoca".`)),
+      h("div", {style:{marginBottom:14}},
+        ...d.options.map((opt,i) =>
+          h("div", {key:i, onClick:(e)=>{e.stopPropagation(); setBest(best===i?null:i); setSaved(false);},
+            title:"Marca cuál era la opción adecuada",
+            style:{marginBottom:8,padding:"6px 8px",borderRadius:"var(--border-radius-md)",cursor:"pointer",
+              border:best===i?"1px solid var(--color-text-info)":"1px solid transparent",
+              background:best===i?"var(--color-background-tertiary)":"transparent"}},
+            h("div", {style:{display:"flex",justifyContent:"space-between",marginBottom:4,gap:8}},
+              h("span", {style:{fontSize:12,color:opt.optimal?evColor(opt.ev):"var(--color-text-secondary)",fontWeight:(opt.optimal||opt.taken)?500:400,display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}},
+                opt.optimal && h(Ico,{name:isTie?"approx":"check",size:12,color:isTie?"var(--color-text-info)":"var(--color-text-success)"}),
+                opt.label,
+                opt.optimal && h("span",{style:{fontSize:10,color:isTie?"var(--color-text-info)":"var(--color-text-success)",border:`0.5px solid ${isTie?"var(--color-text-info)":"var(--color-text-success)"}`,borderRadius:4,padding:"0 5px"}}, isTie?"≈ equivalente":"recomendada por el sistema"),
+                opt.taken && h("span",{style:{fontSize:10,color:"var(--color-text-tertiary)",border:"0.5px solid var(--color-border-secondary)",borderRadius:4,padding:"0 5px"}},"lo que hiciste"),
+                best===i && h("span",{style:{fontSize:10,color:"var(--color-text-info)",border:"0.5px solid var(--color-text-info)",borderRadius:4,padding:"0 5px"}},"tu elección")
+              ),
+              h("span", {style:{fontSize:12,fontFamily:"var(--font-mono)",color:evColor(opt.ev)}}, fmtEV(opt.ev))
+            ),
+            h("div", {style:{height:3,borderRadius:2,background:"var(--color-border-tertiary)",overflow:"hidden"}},
+              h("div", {style:{height:"100%",width:`${(opt.ev||0)*100}%`,background:opt.optimal?"var(--color-text-success)":evColor(opt.ev),borderRadius:2}})
+            ),
+            opt.consequence && h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",marginTop:3}}, opt.consequence)
+          )
+        )
+      ),
+      h("p", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:8}}, "Argumento"),
+      h("div", {style:{fontSize:13,lineHeight:1.7,color:"var(--color-text-primary)",borderLeft:"2px solid var(--color-border-secondary)",paddingLeft:12,marginBottom:14}}, d.argument),
+      d.user_notes && d.user_notes.length>0 && h("div", {style:{marginBottom:14}},
+        h("p", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-info)",marginBottom:8}}, "Tu razonamiento"),
+        ...d.user_notes.map((n,i) =>
+          h("div", {key:i, style:{fontSize:12.5,lineHeight:1.6,color:"var(--color-text-primary)",background:"var(--color-background-tertiary)",borderLeft:"2px solid var(--color-text-info)",borderRadius:"0 var(--border-radius-md) var(--border-radius-md) 0",padding:"8px 12px",marginBottom:6}},
+            h("div", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginBottom:3,fontFamily:"var(--font-mono)"}},
+              `de tu comparación · fuiste ${n.side.toUpperCase()} · ${n.winner==="tie"?"empate":("mejor: "+n.winner.toUpperCase())}${n.against_moment?(" · vs "+n.against_moment):""}`),
+            n.note
+          )
+        )
+      ),
+      h("div", {style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+        d.has_clip && h("button", {onClick:(e)=>{e.stopPropagation();onClip(d.id)}, style:{fontSize:12,display:"flex",alignItems:"center",gap:4,color:"var(--color-text-info)",padding:"4px 0"}},
+          h(Ico,{name:"play",size:12}), clipOpen?"Ocultar clip":"Ver clip"
+        ),
+        h("div", {style:{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}},
+          h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginRight:2}}, "El análisis del programa:"),
+          ...FB_BTNS.map(f =>
+            h("button", {key:f.key, onClick:(e)=>{e.stopPropagation();onFb(d.id,f.key)},
+              style:{fontSize:11,display:"flex",alignItems:"center",gap:3,
+                color:fb===f.key?"var(--color-text-primary)":"var(--color-text-tertiary)",
+                background:fb===f.key?"var(--color-background-tertiary)":"transparent",
+                border:fb===f.key?"0.5px solid var(--color-border-secondary)":"0.5px solid transparent",
+                borderRadius:"var(--border-radius-md)",padding:"4px 9px"}},
+              h(Ico,{name:f.icon,size:12}), f.label
+            )
+          )
+        )
+      ),
+      h("div", {style:{marginTop:14}},
+        h("p", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-info)",marginBottom:6}}, "Tu contexto y justificación"),
+        best!=null && d.options[best] && h("div", {style:{fontSize:11,color:"var(--color-text-info)",marginBottom:6}},
+          `Opción que marcaste como adecuada: "${d.options[best].label}"`),
+        h("textarea", {value:note,
+          onChange:(e)=>{setNote(e.target.value); setSaved(false);},
+          onClick:(e)=>e.stopPropagation(),
+          placeholder:"¿Qué pasó realmente (lo que el sistema no ve)? Marca arriba la opción adecuada y justifica por qué.",
+          style:{width:"100%",minHeight:64,fontSize:12.5,lineHeight:1.5,padding:"8px 10px",boxSizing:"border-box",
+            borderRadius:"var(--border-radius-md)",border:"0.5px solid var(--color-border-secondary)",
+            background:"var(--color-background-primary)",color:"var(--color-text-primary)",resize:"vertical",fontFamily:"inherit"}}),
+        h("div", {style:{display:"flex",gap:4,flexWrap:"wrap",marginTop:8,marginBottom:2}},
+          h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",alignSelf:"center",marginRight:2}}, "Tipo:"),
+          ...MARK_TYPE_BTNS.map(m =>
+            h("button", {key:m.key,
+              onClick:(e)=>{e.stopPropagation(); setMarkType(markType===m.key?null:m.key); setSaved(false);},
+              style:{fontSize:11,padding:"3px 9px",borderRadius:"var(--border-radius-md)",cursor:"pointer",
+                color:markType===m.key?"var(--color-text-primary)":"var(--color-text-tertiary)",
+                background:markType===m.key?"var(--color-background-tertiary)":"transparent",
+                border:markType===m.key?"0.5px solid var(--color-border-secondary)":"0.5px solid transparent"}},
+              m.label))),
+        h("div", {style:{display:"flex",alignItems:"center",gap:10,marginTop:6,flexWrap:"wrap"}},
+          (function(){
+            const needsType = best!=null && !markType;
+            return h("button", {disabled:needsType,
+              onClick:(e)=>{e.stopPropagation(); if(needsType) return;
+                onSave(d.id,{note,best_option:best,mark_type:markType}); setSaved(true);},
+              title: needsType ? "Elige el tipo de marca" : "",
+              style:{fontSize:12,color:"#0e0e11",background:"var(--color-text-info)",border:"none",
+                borderRadius:"var(--border-radius-md)",padding:"5px 12px",
+                cursor:needsType?"not-allowed":"pointer",opacity:needsType?0.5:1,fontWeight:500}},
+              "Guardar contexto");
+          })(),
+          saved && h("span", {style:{fontSize:11,color:"var(--color-text-success)",display:"flex",alignItems:"center",gap:3}}, h(Ico,{name:"check",size:12}), "guardado"),
+          (best!=null && !markType) && h("span", {style:{fontSize:10,color:"var(--color-text-danger)"}}, "elige el tipo de marca"),
+          h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)"}}, "Se guarda en esta decisión, aparte del feedback A/B de Calibrar.")
+        )
+      ),
+      clipOpen && d.has_clip && h("video", {controls:true, preload:"metadata", src:`/clip?id=${d.id}`,
+        onLoadedMetadata:(e)=>{ const off=(d.clip_offset_s||0)-5; if(off>0){ try{ e.target.currentTime=off; }catch(_){} } },
+        onError:(e)=>{e.target.insertAdjacentHTML('afterend','<div class="muted" style="font-size:12px;margin-top:8px">Clip no disponible en disco (ruta movida o eliminada).</div>');e.target.remove();}}),
+      clipOpen && d.has_clip && d.clip_offset_s!=null && h("div",{className:"muted",style:{fontSize:11,marginTop:4,fontFamily:"var(--font-mono)"}},
+        `clip @ ${Math.floor(d.clip_offset_s/60)}:${String(Math.floor(d.clip_offset_s%60)).padStart(2,"0")} · seek −5s para contexto`)
+    )
+  );
+}
+
+function PatternCard({p}){
+  const det = DET[p.detector] || {label:p.detector, acc:"#888"};
+  const tr = trendInfo(p.trend);
+  return h("div", {style:{background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"16px 18px",marginBottom:10,position:"relative",overflow:"hidden"}},
+    h("div", {style:{position:"absolute",right:16,top:6,fontSize:60,fontWeight:700,color:"var(--color-border-tertiary)",fontFamily:"var(--font-mono)",lineHeight:1,pointerEvents:"none",userSelect:"none"}}, p.occ),
+    h("div", {style:{display:"flex",alignItems:"center",gap:6,marginBottom:8}},
+      h("span", {style:{fontSize:11,fontWeight:500,color:tr.c,background:`${tr.c}1f`,padding:"2px 8px",borderRadius:"var(--border-radius-md)",display:"inline-flex",alignItems:"center",gap:4}}, h(Ico,{name:tr.icon,size:11}), tr.label),
+      h("span", {style:{fontSize:11,color:det.acc,background:`${det.acc}1f`,padding:"2px 8px",borderRadius:"var(--border-radius-md)"}}, det.label)
+    ),
+    h("div", {style:{fontSize:14,fontWeight:500,marginBottom:4}}, p.title),
+    h("div", {style:{fontSize:11,fontFamily:"var(--font-mono)",color:"var(--color-text-tertiary)",marginBottom:10}},
+      `${p.matches}/${p.total} partidas · EV gap +${p.ev_gap.toFixed(2)} · última vez ${p.last}`),
+    h("div", {style:{fontSize:13,lineHeight:1.6,color:"var(--color-text-secondary)"}}, p.desc)
+  );
+}
+
+function StatCard({label,val,sub}){
+  return h("div", {style:{background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",padding:"10px 12px"}},
+    h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:4}}, label),
+    h("div", {style:{fontSize:20,fontWeight:500,fontFamily:"var(--font-mono)"}}, val),
+    h("div", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginTop:3}}, sub)
+  );
+}
+
+function MatchItem({m, active, onClick, disagree, reviewed}){
+  const total = m.decisions_count||0;
+  const done = total>0 && reviewed>=total;
+  const partial = reviewed>0 && !done;
+  const mins = m.duration_s ? Math.round(m.duration_s/60) : null;
+  return h("button", {onClick, title: done?"revisada completa":(partial?`${reviewed}/${total} decisiones revisadas`:""), style:{
+      display:"block", width:"100%", textAlign:"left", marginBottom:6,
+      padding:"8px 10px", borderRadius:"var(--border-radius-md)",
+      border: active ? "0.5px solid var(--color-border-secondary)" : "0.5px solid var(--color-border-tertiary)",
+      borderLeft: done ? "3px solid var(--color-text-success)" : (partial ? "3px solid var(--color-text-info)" : undefined),
+      background: active ? "var(--color-background-tertiary)" : "var(--color-background-secondary)",
+    }},
+    h("div", {style:{display:"flex",alignItems:"center",gap:6,marginBottom:3}},
+      done && h(Ico,{name:"check",size:12,color:"var(--color-text-success)"}),
+      h("span", {style:{fontSize:12,fontWeight:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, m.champion),
+      m.win!=null && h("span", {style:{fontSize:10,fontWeight:600,color:m.win?"var(--color-text-success)":"var(--color-text-danger)"}}, m.win?"V":"D"),
+      disagree>0 && h("span", {title:`${disagree} decisión(es) marcadas "se equivoca"`,
+        style:{fontSize:9,fontWeight:700,color:"var(--color-text-danger)",background:"var(--color-background-danger)",
+          padding:"1px 5px",borderRadius:"var(--border-radius-md)",display:"flex",alignItems:"center",gap:2}},
+        "✕", String(disagree)),
+      h("span", {style:{marginLeft:"auto",fontSize:11,fontFamily:"var(--font-mono)",
+        color: done?"var(--color-text-success)":(partial?"var(--color-text-info)":"var(--color-text-secondary)")}},
+        reviewed>0 ? `${reviewed}/${total}` : String(total))
+    ),
+    h("div", {style:{fontSize:10,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}},
+      `${m.cohort} · ${m.date}` + (mins!=null ? ` · ${mins} min` : ""))
+  );
+}
+
+// Summoner's Rift landmarks in world coords (0..M, y up). Drawn vectorially.
+const SR_BLUE = [1600, 1600], SR_RED = [13400, 13400];
+const SR_DRAGON = [9866, 4414], SR_BARON = [5007, 10471];
+const timeHue = t => `hsl(${Math.round(210 - 170*t)}, 70%, 60%)`;  // 0=blue start, 1=amber end
+const rewardStroke = v => v==null ? "#5a5a66" : (v>0 ? "var(--color-text-success)" : (v<0 ? "var(--color-text-danger)" : "#5a5a66"));
+
+function MatchMap({data, fdet, expId, onSelect, onHover}){
+  const M = data.map_max || 15000;
+  const fy = y => M - y;  // LoL y grows up; SVG y grows down
+  const path = data.path || [], decs = data.decisions || [];
+  const detsPresent = [...new Set(decs.map(d => d.detector))];
+  const lane = pts => h("polyline", {points:pts.map(p=>`${p[0]},${fy(p[1])}`).join(" "),
+    fill:"none", stroke:"#22323f", strokeWidth:300, strokeLinejoin:"round", strokeLinecap:"round", opacity:0.7});
+  // Route as time-colored segments (blue start -> amber end) conveys flow/evolution.
+  const segs = [];
+  for(let i=1;i<path.length;i++){
+    const t = path.length<=1 ? 0 : i/(path.length-1);
+    segs.push(h("line", {key:"seg"+i, x1:path[i-1].x, y1:fy(path[i-1].y), x2:path[i].x, y2:fy(path[i].y),
+      stroke:timeHue(t), strokeWidth:130, opacity:0.65, strokeLinecap:"round"}));
+  }
+  return h("div", {style:{marginBottom:16}},
+    h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:6}}, "Mapa de la partida"),
+    h("svg", {viewBox:`0 0 ${M} ${M}`, style:{width:"100%",maxWidth:420,aspectRatio:"1 / 1",display:"block",background:"#0a1016",borderRadius:8,border:"0.5px solid var(--color-border-tertiary)"}},
+      h("line", {x1:0,y1:0,x2:M,y2:M,stroke:"#16313f",strokeWidth:1100,strokeLinecap:"round",opacity:0.6}),
+      lane([[1600,1600],[1600,13400],[13400,13400]]),   // top lane (left + top edges)
+      lane([[1600,1600],[13400,1600],[13400,13400]]),   // bot lane (bottom + right edges)
+      lane([[1600,1600],[13400,13400]]),                // mid lane (diagonal)
+      h("circle", {cx:SR_DRAGON[0],cy:fy(SR_DRAGON[1]),r:430,fill:"none",stroke:"#c97a3a",strokeWidth:75,opacity:0.75}),
+      h("circle", {cx:SR_BARON[0],cy:fy(SR_BARON[1]),r:430,fill:"none",stroke:"#8a5fc0",strokeWidth:75,opacity:0.75}),
+      h("circle", {cx:SR_BLUE[0],cy:fy(SR_BLUE[1]),r:780,fill:"#1d5fae",opacity:0.4}),
+      h("circle", {cx:SR_RED[0],cy:fy(SR_RED[1]),r:780,fill:"#b53b3b",opacity:0.4}),
+      ...segs,
+      path.length>0 && h("circle", {cx:path[0].x,cy:fy(path[0].y),r:240,fill:"#e8e8ea",opacity:0.9}),  // start
+      ...decs.map(d => {
+        const det = DET[d.detector] || {label:d.detector, acc:"#888"};
+        const dim = (fdet && fdet!=="all" && d.detector!==fdet);
+        return h("g", {key:d.id, opacity:dim?0.15:1, style:{cursor:"pointer"}, onClick:()=>onSelect(d.id), onMouseEnter:()=>onHover&&onHover(d.id)},
+          expId===d.id && h("circle", {cx:d.x,cy:fy(d.y),r:620,fill:"none",stroke:"#e8e8ea",strokeWidth:70,opacity:0.9}),
+          h("circle", {cx:d.x,cy:fy(d.y),r:380,fill:det.acc,fillOpacity:0.9,stroke:rewardStroke(d.reward_score),strokeWidth:95},
+            h("title", null, `${det.label} · ${d.time} — ${d.moment}`)));
+      })
+    ),
+    h("div", {style:{display:"flex",flexWrap:"wrap",gap:"3px 10px",marginTop:6}},
+      ...detsPresent.map(dt => { const det = DET[dt] || {label:dt,acc:"#888"};
+        return h("span", {key:dt, style:{display:"inline-flex",alignItems:"center",gap:4,fontSize:10,color:"var(--color-text-tertiary)"}},
+          h("span", {style:{width:8,height:8,borderRadius:"50%",background:det.acc,display:"inline-block"}}), det.label); }),
+      h("span", {style:{display:"inline-flex",alignItems:"center",gap:4,fontSize:10,color:"var(--color-text-tertiary)"}},
+        h("span", {style:{width:8,height:8,borderRadius:"50%",border:"2px solid #c97a3a",display:"inline-block"}}), "foso de Dragón"),
+      h("span", {style:{display:"inline-flex",alignItems:"center",gap:4,fontSize:10,color:"var(--color-text-tertiary)"}},
+        h("span", {style:{width:8,height:8,borderRadius:"50%",border:"2px solid #8a5fc0",display:"inline-block"}}), "foso de Barón")
+    ),
+    h("div", {className:"muted", style:{fontSize:10,marginTop:3}},
+      `ruta azul→ámbar (inicio→fin) · borde verde/rojo = reward · clic para abrir`)
+  );
+}
+
+// Swimlane timeline: one row per detector, x = match time. Conveys the rhythm
+// of the game (clusters = hot moments). Same data as the map.
+function MatchTimeline({data, fdet, expId, onSelect, onHover}){
+  const decs = data.decisions || [];
+  const maxT = Math.max(1, data.duration_s || (decs.length ? Math.max(...decs.map(d=>d.game_time_ms))/1000 : 1));
+  const dets = Object.keys(DET).filter(dt => decs.some(d => d.detector===dt));
+  const LABEL = 64;
+  const ticks = []; for(let s=300; s<maxT; s+=300) ticks.push(s);
+  const pct = t => `${Math.min(100, Math.max(0, (t/maxT)*100))}%`;
+  const rstroke = rs => rs==null ? "#5a5a66" : (rs>0 ? "var(--color-text-success)" : (rs<0 ? "var(--color-text-danger)" : "#5a5a66"));
+  return h("div", {style:{marginBottom:16}},
+    h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:8}}, "Línea de tiempo"),
+    h("div", {style:{background:"#0a1016",border:"0.5px solid var(--color-border-tertiary)",borderRadius:8,padding:"10px 12px"}},
+      h("div", {style:{display:"flex",marginBottom:4}},
+        h("div", {style:{width:LABEL,flexShrink:0}}),
+        h("div", {style:{position:"relative",flex:1,height:12}},
+          ...ticks.map(s => h("div", {key:s, style:{position:"absolute",left:pct(s),top:0,transform:"translateX(-50%)",fontSize:9,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, `${Math.floor(s/60)}:00`))
+        )
+      ),
+      ...dets.map(dt => {
+        const det = DET[dt] || {label:dt,acc:"#888"};
+        const rows = decs.filter(d => d.detector===dt);
+        const dim = (fdet && fdet!=="all" && dt!==fdet);
+        return h("div", {key:dt, style:{display:"flex",alignItems:"center",height:24,opacity:dim?0.2:1}},
+          h("div", {style:{width:LABEL,flexShrink:0,fontSize:10,color:det.acc,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}, det.label),
+          h("div", {style:{position:"relative",flex:1,height:"100%",borderLeft:"0.5px solid var(--color-border-tertiary)"}},
+            ...ticks.map(s => h("div", {key:"g"+s, style:{position:"absolute",left:pct(s),top:0,bottom:0,width:1,background:"var(--color-border-tertiary)",opacity:0.4}})),
+            ...rows.map(d => {
+              const sel = expId===d.id;
+              return h("div", {key:d.id, title:`${det.label} · ${d.time} — ${d.moment}`, onClick:()=>onSelect(d.id), onMouseEnter:()=>onHover&&onHover(d.id),
+                style:{position:"absolute",left:pct(d.game_time_ms/1000),top:"50%",transform:"translate(-50%,-50%)",
+                  width:sel?16:12,height:sel?16:12,borderRadius:"50%",background:det.acc,
+                  border:`2px solid ${sel?"#e8e8ea":rstroke(d.reward_score)}`,cursor:"pointer",boxSizing:"border-box"}});
+            })
+          )
+        );
+      })
+    ),
+    h("div", {className:"muted", style:{fontSize:10,marginTop:3}}, "eje = tiempo de partida · color = detector · borde verde/rojo = reward · clic para abrir")
+  );
+}
+
+// Qualitative annotation for the focused viz marker (Unified "text bubbles"):
+// shows the decision's moment + argument next to the spatial/temporal view.
+function VizAnnotation({d, onOpen}){
+  if(!d) return h("div", {className:"muted", style:{fontSize:11,padding:"8px 2px"}},
+    "Pasa el cursor o haz clic en un punto del mapa / línea de tiempo para ver el detalle.");
+  const det = DET[d.detector] || {label:d.detector, acc:"#888"};
+  return h("div", {style:{border:"0.5px solid var(--color-border-tertiary)",borderLeft:`3px solid ${det.acc}`,borderRadius:"0 8px 8px 0",padding:"10px 12px",background:"var(--color-background-secondary)",marginTop:10}},
+    h("div", {style:{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}},
+      h("span", {style:{fontSize:11,fontWeight:500,color:det.acc,background:`${det.acc}22`,padding:"2px 8px",borderRadius:6}}, det.label),
+      h("span", {style:{fontSize:12,fontWeight:500}}, d.champion),
+      h("span", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, d.time),
+      h("div", {style:{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}},
+        d.power_index!=null && h("span", {style:{fontSize:11,fontFamily:"var(--font-mono)",color:powerColor(d.power_index)}}, `Fz ${d.power_index.toFixed(2)}`),
+        h("span", {style:{fontSize:11,fontFamily:"var(--font-mono)",color:evColor(d.ev_taken)}}, `EV ${fmtEV(d.ev_taken)}`)
+      )
+    ),
+    h("div", {style:{fontSize:12,fontWeight:500,marginBottom:3}}, d.moment),
+    d.argument && h("div", {style:{fontSize:12,lineHeight:1.55,color:"var(--color-text-secondary)"}}, d.argument),
+    h("button", {onClick:(e)=>{e.stopPropagation(); onOpen&&onOpen(d.id);}, style:{marginTop:6,fontSize:11,color:"var(--color-text-info)",padding:0}}, "Expandir aquí ↓")
+  );
+}
+
+// Win-probability curve (proxy: team gold-diff through a logistic). Green above
+// 50% = our advantage; objective/tower hitos mark what moved it (power spikes).
+const KIND_INI = {dragon:"D", baron_nashor:"B", riftherald:"H", horde:"G", atakhan:"A", tower:"T", inhibitor:"I"};
+function WinProbChart({data}){
+  const wp = data.winprob || [], evs = data.events || [];
+  if(!wp.length) return h("div", {className:"muted", style:{fontSize:11,padding:"8px 0"}}, "Sin datos de oro para esta partida.");
+  const W=1000, H=240, maxT=Math.max(1, data.duration_s || (wp[wp.length-1].t_ms/1000));
+  const X = ms => Math.min(W, Math.max(0, (ms/1000/maxT)*W));
+  const Y = p => (1-p)*H;
+  const ticks = []; for(let s=300; s<maxT; s+=300) ticks.push(s);
+  const segs = [];
+  for(let i=1;i<wp.length;i++){ const a=wp[i-1], b=wp[i]; const up=(a.prob+b.prob)/2>=0.5;
+    segs.push(h("line", {key:i, x1:X(a.t_ms),y1:Y(a.prob),x2:X(b.t_ms),y2:Y(b.prob),
+      stroke:up?"var(--color-text-success)":"var(--color-text-danger)", strokeWidth:3})); }
+  return h("div", {style:{marginBottom:16}},
+    h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:6}}, "Ventaja / win-probability (proxy de oro)"),
+    h("svg", {viewBox:`0 0 ${W} ${H+24}`, style:{width:"100%",background:"#0a1016",borderRadius:8,border:"0.5px solid var(--color-border-tertiary)"}},
+      h("line", {x1:0,y1:Y(0.5),x2:W,y2:Y(0.5),stroke:"var(--color-border-secondary)",strokeWidth:1,strokeDasharray:"6 6"}),
+      ...ticks.map(s => h("g", {key:"t"+s},
+        h("line", {x1:X(s*1000),y1:0,x2:X(s*1000),y2:H,stroke:"var(--color-border-tertiary)",strokeWidth:1,opacity:0.4}),
+        h("text", {x:X(s*1000),y:H+16,fill:"var(--color-text-tertiary)",fontSize:12,textAnchor:"middle",fontFamily:"var(--font-mono)"}, `${Math.floor(s/60)}:00`))),
+      ...segs,
+      h("text", {x:6,y:14,fill:"var(--color-text-tertiary)",fontSize:12}, "100%"),
+      h("text", {x:6,y:H-4,fill:"var(--color-text-tertiary)",fontSize:12}, "0%"),
+      ...evs.map((e,i) => h("g", {key:"e"+i},
+        h("title", null, `${e.kind} ${e.ours?"(nuestro)":"(enemigo)"}`),
+        h("circle", {cx:X(e.t_ms),cy:H-9,r:9,fill:e.ours?"var(--color-text-success)":"var(--color-text-danger)",fillOpacity:0.9}),
+        h("text", {x:X(e.t_ms),y:H-5,fill:"#0a1016",fontSize:11,textAnchor:"middle",fontWeight:700}, KIND_INI[e.kind]||"?")))
+    ),
+    h("div", {className:"muted", style:{fontSize:10,marginTop:3}}, "verde = ventaja / rojo = desventaja · marcas: objetivos y torres (verde nuestro, rojo enemigo) · D dragón · B barón · H heraldo · T torre · I inhib")
+  );
+}
+
+// #4 — "Which of my games does this resemble, and are they losses?"
+function SimilarMatches({match, onSelect}){
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let a = true; setData(null);
+    fetch("/api/match_similarity?match=" + encodeURIComponent(match))
+      .then(r => r.json()).then(d => { if(a) setData(d); }).catch(()=>{});
+    return () => { a = false; };
+  }, [match]);
+  if(!data) return null;
+  const nb = data.neighbors || [];
+  if(!nb.length) return null;
+  return h("div", {style:{marginTop:14, marginBottom:6}},
+    h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:6,display:"flex",gap:8,alignItems:"center"}},
+      "Partidas similares",
+      data.loss_rate_neighbors!=null && h("span", {style:{fontFamily:"var(--font-mono)",color:data.loss_rate_neighbors>=0.5?"var(--color-text-danger)":"var(--color-text-secondary)"}},
+        `${Math.round(data.loss_rate_neighbors*100)}% derrotas`)
+    ),
+    ...nb.map(n => h("button", {key:n.match_id, onClick:()=>onSelect(n.match_id),
+      style:{display:"block",width:"100%",textAlign:"left",border:"0.5px solid var(--color-border-tertiary)",borderRadius:6,background:"var(--color-background-secondary)",padding:"8px 10px",marginBottom:6}},
+      h("div", {style:{display:"flex",alignItems:"center",gap:6,marginBottom:n.shared.length?4:0}},
+        h("span", {style:{fontSize:12,fontWeight:500}}, n.champion),
+        n.win!=null && h("span", {style:{fontSize:10,fontWeight:600,color:n.win?"var(--color-text-success)":"var(--color-text-danger)"}}, n.win?"V":"D"),
+        h("span", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, n.date),
+        h("span", {style:{marginLeft:"auto",fontSize:10,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, `dist ${n.distance}`)
+      ),
+      n.shared.length>0 && h("div", {style:{display:"flex",flexWrap:"wrap",gap:4}},
+        ...n.shared.map((s,i) => h("span", {key:i, style:{fontSize:10,color:"var(--color-text-secondary)",background:"var(--color-background-tertiary)",borderRadius:4,padding:"1px 6px"}},
+          `${s.dim} ${s.high?"alto":"bajo"}`))
+      )
+    ))
+  );
+}
+
+const ROLE_L = {UTILITY:"Support", JUNGLE:"Jungla", MIDDLE:"Mid", TOP:"Top", BOTTOM:"ADC"};
+function phaseOf(ms){ const m=(ms||0)/60000; return m<14?"early":(m<25?"mid":"late"); }
+
+// Decision card for side-by-side comparison in Calibrate: full context + clip.
+function CompareCard({d}){
+  const [clip, setClip] = useState(false);
+  const det = DET[d.detector] || {label:d.detector, acc:"#888"};
+  const chip = (t) => h("span", {style:{fontSize:10,color:"var(--color-text-secondary)",background:"var(--color-background-tertiary)",borderRadius:4,padding:"1px 6px"}}, t);
+  return h("div", {style:{flex:1,minWidth:0,border:"0.5px solid var(--color-border-tertiary)",borderTop:`3px solid ${det.acc}`,borderRadius:8,padding:12,background:"var(--color-background-secondary)"}},
+    h("div", {style:{display:"flex",alignItems:"center",gap:6,marginBottom:6,flexWrap:"wrap"}},
+      h("span", {style:{fontSize:11,fontWeight:500,color:det.acc,background:`${det.acc}22`,padding:"2px 8px",borderRadius:6}}, det.label),
+      h("span", {style:{fontSize:12,fontWeight:500}}, d.champion),
+      h("span", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, `${d.time} · ${d.date}`)
+    ),
+    h("div", {style:{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}},
+      d.role && chip(ROLE_L[d.role]||d.role),
+      chip(phaseOf(d.game_time_ms)+" game"),
+      d.objective && chip(d.objective)
+    ),
+    h("div", {style:{fontSize:12,color:"var(--color-text-secondary)",marginBottom:8}}, d.moment),
+    d.hef && d.hef.score!=null && h(HefPanel, {hef:d.hef}),
+    d.outcome && h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:6}}, d.outcome),
+    d.argument && h("div", {style:{fontSize:12,lineHeight:1.55,color:"var(--color-text-secondary)",borderLeft:"2px solid var(--color-border-secondary)",paddingLeft:8,marginBottom:8}}, d.argument),
+    d.has_clip && h("button", {onClick:()=>setClip(c=>!c), style:{fontSize:11,display:"flex",alignItems:"center",gap:4,color:"var(--color-text-info)",padding:"2px 0"}},
+      h(Ico,{name:"play",size:12}), clip?"Ocultar clip":`Ver clip${d.clip_offset_s!=null?` @ ${Math.floor(d.clip_offset_s/60)}:${String(Math.floor(d.clip_offset_s%60)).padStart(2,"0")}`:""}`),
+    clip && d.has_clip && h("video", {controls:true, preload:"metadata", src:`/clip?id=${d.id}`,
+      style:{width:"100%",borderRadius:6,marginTop:6,maxHeight:240,background:"#000"},
+      onLoadedMetadata:(e)=>{ const off=(d.clip_offset_s||0)-5; if(off>0){ try{ e.target.currentTime=off; }catch(_){} } },
+      onError:(e)=>{ e.target.insertAdjacentHTML('afterend','<div class="muted" style="font-size:11px;margin-top:6px">Clip no disponible en disco.</div>'); e.target.remove(); }})
+  );
+}
+
+// Calibrate tab: judge pairs (A vs B) → learn the HEF weights ω from preferences.
+function Calibrate(){
+  const [pair, setPair] = useState(null);
+  const [w, setW] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const loadPair = () => fetch("/api/pair").then(r=>r.json()).then(setPair).catch(()=>{});
+  const loadW = () => fetch("/api/weights").then(r=>r.json()).then(setW).catch(()=>{});
+  useEffect(() => { loadPair(); loadW(); }, []);
+  const judge = (winner) => {
+    if(busy || !pair || !pair.pair) return;
+    const [a,b] = pair.pair; setBusy(true);
+    fetch("/api/preference", {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({a:a.id,b:b.id,winner,detector:pair.detector,note:note.trim()||null})})
+      .then(()=>{ setNote(""); loadPair(); loadW(); setBusy(false); }).catch(()=>setBusy(false));
+  };
+  const apply = () => fetch("/api/weights/apply",{method:"POST"}).then(r=>r.json()).then(()=>location.reload()).catch(()=>{});
+  const reset = () => fetch("/api/weights/reset",{method:"POST"}).then(()=>location.reload()).catch(()=>{});
+
+  const DIMS=["power","info","action_fit","wave"];
+  const DIM_L={power:"Poder",info:"Info",action_fit:"Acción↔estado",wave:"Oleada"};
+  const learned = w && w.learned;
+  return h("div", null,
+    // weights panel
+    h("div", {style:{border:"0.5px solid var(--color-border-tertiary)",borderRadius:8,padding:"12px 14px",marginBottom:16,background:"var(--color-background-secondary)"}},
+      h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}},
+        h("span", {style:{fontSize:12,fontWeight:500}}, "Pesos del HEF — calibración por preferencias"),
+        h("span", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}}, w ? `${w.n_preferences} comparaciones${w.is_custom?" · personalizados activos":""}` : "…")
+      ),
+      w && h("div", {style:{display:"grid",gridTemplateColumns:"90px 1fr 1fr",gap:"3px 10px",alignItems:"center",fontSize:10}},
+        h("span",{style:{color:"var(--color-text-tertiary)"}},""),
+        h("span",{style:{color:"var(--color-text-tertiary)",textTransform:"uppercase",letterSpacing:"0.05em"}},"Actual"),
+        h("span",{style:{color:"var(--color-text-tertiary)",textTransform:"uppercase",letterSpacing:"0.05em"}}, learned?"Aprendido":"Aprendido (sin datos)"),
+        ...DIMS.flatMap(dm => [
+          h("span",{key:dm+"l",style:{color:"var(--color-text-secondary)"}},DIM_L[dm]),
+          h("div",{key:dm+"c",style:{height:6,borderRadius:3,background:"var(--color-background-tertiary)"}},
+            h("div",{style:{height:"100%",width:`${(w.current[dm]||0)*100}%`,background:"var(--color-text-info)",borderRadius:3}})),
+          h("div",{key:dm+"x",style:{height:6,borderRadius:3,background:"var(--color-background-tertiary)"}},
+            learned && h("div",{style:{height:"100%",width:`${(learned.weights[dm]||0)*100}%`,background:"var(--color-text-success)",borderRadius:3}}))
+        ])
+      ),
+      learned && h("div", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginTop:8,fontFamily:"var(--font-mono)"}},
+        `consistencia: aprendido ${(learned.accuracy*100).toFixed(0)}% vs actual ${(learned.accuracy_default*100).toFixed(0)}%`),
+      h("div", {style:{display:"flex",gap:6,marginTop:10}},
+        h("button", {disabled:!(learned&&learned.enough), onClick:apply,
+          style:{...sBadge(false),fontSize:11,padding:"5px 12px",border:"0.5px solid var(--color-border-secondary)",
+            opacity:(learned&&learned.enough)?1:0.4,color:(learned&&learned.enough)?"var(--color-text-success)":"var(--color-text-tertiary)"}},
+          learned&&learned.enough ? "Aplicar pesos aprendidos" : `Aplicar (faltan ${Math.max(0,8-(w?w.n_preferences:0))})`),
+        w&&w.is_custom && h("button", {onClick:reset, style:{...sBadge(false),fontSize:11,padding:"5px 12px"}}, "Restaurar default")
+      )
+    ),
+    // the pair
+    !pair ? h("div",{className:"muted",style:{fontSize:12,padding:"20px 0",textAlign:"center"}},"Cargando par…")
+    : !pair.pair ? h("div",{className:"muted",style:{fontSize:12,padding:"20px 0",textAlign:"center"}},"No hay suficientes decisiones comparables.")
+    : h("div", null,
+        pair.context && h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:4,textAlign:"center"}},
+          "Comparando contexto similar: " + [
+            DET[pair.detector] ? DET[pair.detector].label : pair.detector,
+            pair.context.role ? (ROLE_L[pair.context.role]||pair.context.role) : null,
+            pair.context.phase ? pair.context.phase+" game" : null,
+            pair.context.situation ? String(pair.context.situation).toLowerCase().replace(/_/g," ") : null,
+          ].filter(Boolean).join(" · ")),
+        h("div", {style:{fontSize:13,color:"var(--color-text-primary)",fontWeight:500,marginBottom:10,textAlign:"center"}}, "¿Cuál se jugó mejor?"),
+        pair.both_have_clip===false && h("div", {className:"muted", style:{fontSize:10,textAlign:"center",marginBottom:8}},
+          "Nota: una de las dos no tiene clip (no había par comparable con ambos videos)."),
+        h("div", {style:{display:"flex",gap:12,alignItems:"flex-start",marginBottom:12}},
+          h(CompareCard,{d:pair.pair[0]}), h(CompareCard,{d:pair.pair[1]})),
+        h("textarea", {value:note, onChange:e=>setNote(e.target.value), rows:2,
+          placeholder:"Tu razonamiento: ¿por qué A o B se jugó mejor? ¿qué viste en el clip, te convenía?",
+          style:{width:"100%",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",
+            border:"0.5px solid var(--color-border-tertiary)",borderRadius:6,padding:"8px 10px",fontSize:12,
+            fontFamily:"inherit",resize:"vertical",marginBottom:10}}),
+        h("div", {style:{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}},
+          h("button",{disabled:busy,onClick:()=>judge("a"),style:{...sBadge(false),fontSize:12,padding:"7px 16px",border:"0.5px solid var(--color-border-secondary)"}},"◄ A mejor"),
+          h("button",{disabled:busy,onClick:()=>judge("tie"),title:"Las dos igual de buenas o igual de malas — son equivalentes (cuenta como juicio)",style:{...sBadge(false),fontSize:12,padding:"7px 14px",border:"0.5px solid var(--color-border-tertiary)"}},"Empate (equivalentes)"),
+          h("button",{disabled:busy,onClick:()=>judge("skip"),title:"No comparable o sin contexto — no aporta, no la cuentes para calibrar",style:{...sBadge(false),fontSize:12,padding:"7px 14px",color:"var(--color-text-tertiary)",opacity:0.8}},"No aporta / saltar"),
+          h("button",{disabled:busy,onClick:()=>judge("b"),style:{...sBadge(false),fontSize:12,padding:"7px 16px",border:"0.5px solid var(--color-border-secondary)"}},"B mejor ►")
+        )
+      )
+  );
+}
+
+// Cola de revisión: decisiones cuya marca explícita de "opción adecuada"
+// contradice (o confirma) a la fórmula action_fit — los mismos casos del
+// informe scripts/triage_commit_fit.py, pero con salto directo a la decisión.
+function ReviewQueue({queue, onJump, onRefresh, decisions, fbs, onFb, onSave}){
+  const [showAgree, setShowAgree] = useState(false);
+  const [expId, setExpId] = useState(null);    // caso expandido INLINE (se revisa aquí, sin saltar de pestaña)
+  const [clipId, setClipId] = useState(null);
+  if(!queue) return h("div",{className:"muted",style:{fontSize:12,padding:"20px 0",textAlign:"center"}},"Cargando…");
+  if(!queue.n) return h("div",{className:"muted",style:{fontSize:12,padding:"20px 0",textAlign:"center",lineHeight:1.7}},
+    "No hay marcas válidas con fingerprint todavía.", h("br"),
+    "Corre scripts/backfill_feedback_fingerprints.py --apply y recarga; o marca opciones adecuadas en decisiones nuevas.");
+  const items = (queue.items||[]).filter(x => showAgree || !x.agree);
+  const goNext = (id) => {
+    const i = items.findIndex(x=>x.id===id);
+    const next = items[i+1] || null;
+    setExpId(next ? next.id : null); setClipId(null);
+    onRefresh && onRefresh();
+    if(next) setTimeout(()=>{ const el=document.getElementById("rq-"+next.id); if(el) el.scrollIntoView({behavior:"smooth",block:"start"}); }, 80);
+  };
+  return h("div", null,
+    h("div", {style:{fontSize:12,color:"var(--color-text-secondary)",marginBottom:10,lineHeight:1.6}},
+      `Marcaste la opción adecuada en ${queue.n} decisiones válidas; la fórmula (action_fit) te contradice en ${queue.n_disagree}. `,
+      "Cada caso es o un defecto de la fórmula o una marca que vale la pena re-juzgar: expándelo aquí mismo, mira el clip, re-marca o anota, y pasa al siguiente."),
+    h("div", {style:{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}},
+      h("button", {onClick:()=>setShowAgree(s=>!s), style:{...sBadge(showAgree),fontSize:11,padding:"4px 10px"}},
+        showAgree ? "Ocultar las que coinciden" : `Mostrar también las que coinciden (${queue.n - queue.n_disagree})`),
+      h("button", {onClick:onRefresh, title:"Recalcula la cola con tu feedback más reciente",
+        style:{...sBadge(false),fontSize:11,padding:"4px 10px",border:"0.5px solid var(--color-border-tertiary)"}}, "Refrescar cola")),
+    items.length===0 && h("div",{className:"muted",style:{fontSize:12,padding:"16px 0",textAlign:"center"}},"Nada en desacuerdo. La fórmula coincide con todas tus marcas vigentes."),
+    ...items.map(x => { const det = DET[x.detector]||{label:x.detector,acc:"#888"};
+      const open = expId===x.id;
+      const full = open ? decisions.find(d=>d.id===x.id) : null;
+      return h("div", {key:x.id, id:"rq-"+x.id, style:{marginBottom:6}},
+        h("button", {onClick:()=>{ setExpId(open?null:x.id); setClipId(null); }, title: open?"Cerrar":"Revisar aquí mismo",
+            style:{display:"block",width:"100%",textAlign:"left",
+            border:"0.5px solid var(--color-border-tertiary)",
+            borderLeft:`3px solid ${x.agree?"var(--color-text-success)":"var(--color-text-danger)"}`,
+            borderRadius: open ? "0 8px 0 0" : "0 8px 8px 0",
+            background: open ? "var(--color-background-tertiary)" : "var(--color-background-secondary)", padding:"9px 12px"}},
+          h("div", {style:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}},
+            h("span", {style:{fontSize:10,fontWeight:600,color:"#0e0e11",background:det.acc,padding:"1px 7px",borderRadius:5}}, det.label),
+            h("span", {style:{fontSize:12,fontWeight:500}}, x.moment),
+            h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)",marginLeft:"auto"}}, `${x.time} · ${x.date}`),
+            h(Ico,{name:open?"up":"down",size:12,color:"var(--color-text-tertiary)"})),
+          h("div", {style:{fontSize:11,fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)",marginBottom:x.note?3:0}},
+            `hiciste ${x.taken} (fit ${x.fit_taken==null?"—":x.fit_taken.toFixed(2)}) · marcaste ${x.best} (fit ${x.fit_best==null?"—":x.fit_best.toFixed(2)}) · `,
+            h("span",{style:{color:x.agree?"var(--color-text-success)":"var(--color-text-danger)",fontWeight:600}}, x.agree?"fórmula de acuerdo":"fórmula en contra")),
+          x.note && h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)"}}, x.note)),
+        open && h("div", {style:{border:"0.5px solid var(--color-border-tertiary)",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px 10px 6px",background:"var(--color-background-primary)"}},
+          full
+            ? h(DecisionCard, {key:"rq-card-"+x.id, d:full, exp:true, onToggle:()=>setExpId(null),
+                fb:fbs[x.id], onFb, clipOpen:clipId===x.id, onClip:(id)=>setClipId(c=>c===id?null:id), onSave})
+            : h("div",{className:"muted",style:{fontSize:12,padding:"8px 0"}},"No encontré la decisión en memoria; recarga la página (F5)."),
+          h("div", {style:{display:"flex",gap:10,alignItems:"center",margin:"8px 2px 4px",flexWrap:"wrap"}},
+            h("button", {onClick:()=>goNext(x.id), style:{fontSize:12,color:"#0e0e11",background:"var(--color-text-info)",borderRadius:6,padding:"5px 12px",fontWeight:500}}, "Siguiente caso →"),
+            h("button", {onClick:()=>onJump(x), style:{fontSize:11,color:"var(--color-text-tertiary)",textDecoration:"underline"}}, "abrir en Decisiones (mapa y partida completa)"),
+            h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginLeft:"auto"}}, 'Guarda con "Guardar contexto" dentro de la tarjeta antes de pasar.'))));
+    })
+  );
+}
+
+// Sesion de hoy (#16): 5-6 momentos SIN marcar en mezcla anti-sesgo (R4 del
+// contraste). Cada card salta a su decision (misma mecanica que Revision); al
+// marcar y refrescar, salen de la sesion.
+const SESSION_BADGE = {
+  dominant:  {label:"patrón dominante", color:"#ef4444"},
+  objective: {label:"objetivo de mayor costo", color:"#f59e0b"},
+  success:   {label:"acierto difícil", color:"#22c55e"},
+  other:     {label:"variedad", color:"#8b5cf6"},
+};
+function SessionView({data, done, decisions, fbs, onFb, onSave, onJump, onRefresh, onMore}){
+  const [expId, setExpId] = useState(null);   // momento expandido INLINE (se revisa aquí, sin saltar de pestaña)
+  const [clipId, setClipId] = useState(null);
+  if(!data) return h("div", {style:{padding:"40px 0",textAlign:"center",color:"var(--color-text-tertiary)",fontSize:13}}, "Cargando sesión…");
+  const t = data.temporal;
+  // completada = tocada via los handlers de sesion O con feedback puesto desde
+  // cualquier otra pestana (fbs es el estado global de agree/disagree).
+  const isDone = (id) => !!done[id] || !!fbs[id];
+  const nDone = data.moments.filter(m=>isDone(m.id)).length;
+  return h("div", null,
+    h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}},
+      h("div", {style:{fontSize:12,color:"var(--color-text-tertiary)"}},
+        `${data.moments.length} momentos · presupuesto ~20 min · `,
+        h("span", {style:{color: nDone===data.moments.length&&nDone>0 ? "#22c55e" : "var(--color-text-secondary)",fontWeight:600}},
+          `${nDone}/${data.moments.length} completados`)),
+      h("button", {onClick:onRefresh, title:"Trae una tanda nueva (los momentos ya marcados salen de la cola)",
+        style:{...sBadge(false),fontSize:11,padding:"4px 10px"}}, "Nueva sesión")
+    ),
+    t && h("div", {style:{border:"0.5px solid rgba(239,68,68,0.35)",background:"rgba(239,68,68,0.07)",borderRadius:"var(--border-radius-md)",padding:"8px 12px",marginBottom:12,fontSize:12}},
+      `${t.count} de tus últimos ${t.last} overextends fueron en min ${t.min_from}-${t.min_to} — ahí vive el hábito ahora mismo.`),
+    data.moments.length===0
+      ? h("div", {style:{textAlign:"center",color:"var(--color-text-tertiary)",padding:"40px 0",fontSize:13}}, "Nada sin marcar — sesión al día.")
+      : data.moments.map((mo,i) => {
+          const b = SESSION_BADGE[mo.bucket] || SESSION_BADGE.other;
+          const open = expId===mo.id;
+          const moDone = isDone(mo.id);
+          const full = open ? decisions.find(d=>d.id===mo.id) : null;
+          return h("div", {key:mo.id, id:"sv-"+mo.id, style:{marginBottom:8}},
+            h("button", {onClick:()=>{ setExpId(open?null:mo.id); setClipId(null); },
+              title: open ? "Cerrar" : mo.reason,
+              style:{display:"flex",gap:10,alignItems:"center",width:"100%",textAlign:"left",
+                border:"0.5px solid var(--color-border-tertiary)",
+                borderLeft:`3px solid ${moDone ? "#22c55e" : b.color}`,
+                borderRadius: open ? "0 8px 0 0" : "0 8px 8px 0",
+                background: open ? "var(--color-background-tertiary)" : "var(--color-background-secondary)",
+                padding:"10px 12px", opacity: moDone && !open ? 0.65 : 1, cursor:"pointer"}},
+              h("div", {style:{fontSize:15,fontFamily:"var(--font-mono)",color:"var(--color-text-tertiary)",width:18,flexShrink:0}}, String(i+1)),
+              h("div", {style:{flex:1,minWidth:0}},
+                h("div", {style:{fontSize:12,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}, mo.moment || mo.detector),
+                h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}},
+                  `${mo.champion} · ${mo.date} · ${mo.time}` + (mo.ev_gap!=null ? ` · gap EV ${mo.ev_gap.toFixed(2)}` : ""))
+              ),
+              moDone && h("span", {style:{fontSize:10,padding:"3px 8px",borderRadius:"var(--border-radius-md)",border:"0.5px solid #22c55e55",background:"#22c55e14",color:"#22c55e",whiteSpace:"nowrap",flexShrink:0}}, "completada"),
+              h("span", {style:{fontSize:10,padding:"3px 8px",borderRadius:"var(--border-radius-md)",border:`0.5px solid ${b.color}55`,background:`${b.color}14`,color:b.color,whiteSpace:"nowrap",flexShrink:0}}, b.label),
+              h(Ico,{name:open?"up":"down",size:12,color:"var(--color-text-tertiary)"})
+            ),
+            open && h("div", {style:{border:"0.5px solid var(--color-border-tertiary)",borderTop:"none",borderRadius:"0 0 8px 8px",padding:"10px 10px 6px",background:"var(--color-background-primary)"}},
+              full
+                ? h(DecisionCard, {key:"sv-card-"+mo.id, d:full, exp:true, onToggle:()=>setExpId(null),
+                    fb:fbs[mo.id], onFb, clipOpen:clipId===mo.id, onClip:(id)=>setClipId(c=>c===id?null:id), onSave})
+                : h("div",{className:"muted",style:{fontSize:12,padding:"8px 0"}},"No encontré la decisión en memoria; recarga la página (F5)."),
+              h("div", {style:{display:"flex",gap:10,alignItems:"center",margin:"8px 2px 4px",flexWrap:"wrap"}},
+                h("button", {onClick:()=>onJump({id:mo.id, match:mo.match, cohort:mo.cohort}), style:{fontSize:11,color:"var(--color-text-tertiary)",textDecoration:"underline"}}, "abrir en Decisiones (mapa y partida completa)"),
+                h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",marginLeft:"auto"}}, 'Marca o guarda contexto en la tarjeta: queda "completada"; abajo, "Traer nuevas" la cambia por otra.'))
+            )
+          );
+        }),
+    data.moments.length>0 && (
+      nDone>0
+        ? h("div", {style:{textAlign:"center",margin:"14px 0 4px"}},
+            h("button", {onClick:onMore, title:"Cambia las completadas por momentos nuevos; deja las que aún no marcaste",
+              style:{...sBadge(false),fontSize:12,padding:"7px 18px",border:"0.5px solid var(--color-border-tertiary)"}},
+              `Traer ${nDone} nueva${nDone===1?"":"s"} (reemplaza completadas)`))
+        : (data.exhausted
+            ? h("div", {style:{textAlign:"center",margin:"14px 0 4px",fontSize:12,color:"var(--color-text-tertiary)"}}, "No quedan más momentos sin marcar en la cola.")
+            : null))
+  );
+}
+
+// Progreso conductual (#10): serie de la proporcion de muertes overextension-
+// with-lead con banda IC de Wilson, linea de meta y veredicto por bloques.
+// La banda existe para NO celebrar ruido: cada ventana tiene 4-5 incidentes.
+function ProgressCard({prog}){
+  if(!prog || !prog.series || !prog.series.length) return null;
+  const s = prog.series;
+  const W = 640, H = 120, PAD = 4;
+  const maxY = Math.max(prog.goal_prop*1.5, ...s.map(p=>p.ci_high||0)) * 1.05;
+  const x = i => PAD + i*(W-2*PAD)/Math.max(1, s.length-1);
+  const y = v => H - PAD - (v/maxY)*(H-2*PAD);
+  const line = s.map((p,i)=>`${x(i).toFixed(1)},${y(p.prop||0).toFixed(1)}`).join(" ");
+  const band = s.map((p,i)=>`${x(i).toFixed(1)},${y(p.ci_high||0).toFixed(1)}`).join(" ")
+    + " " + [...s].reverse().map((p,i)=>`${x(s.length-1-i).toFixed(1)},${y(p.ci_low||0).toFixed(1)}`).join(" ");
+  const l = prog.latest, b = prog.blocks;
+  const pct = v => v==null ? "—" : (v*100).toFixed(1)+"%";
+  let verdict = null;
+  if(b && b.prev.prop!=null && b.last.prop!=null){
+    if(b.last.ci_high < b.prev.ci_low) verdict = {txt:"mejora clara (IC separados)", color:"#22c55e"};
+    else if(b.last.ci_low > b.prev.ci_high) verdict = {txt:"empeoramiento (IC separados)", color:"var(--color-text-danger)"};
+    else verdict = {txt:"IC solapados: sin cambio distinguible todavía", color:"var(--color-text-tertiary)"};
+  }
+  return h("div", {style:{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",padding:"14px 16px",marginBottom:16}},
+    h("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",flexWrap:"wrap",gap:8}},
+      h("div", null,
+        h("div", {style:{fontSize:13,fontWeight:600}}, "Progreso — sobreextensión con ventaja"),
+        h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",marginTop:2}},
+          `muertes ${prog.classes.join("/")} con power_index > ${prog.lead_power_index} · ventana móvil de ${prog.window} partidas · ${prog.note}`)
+      ),
+      h("div", {style:{fontSize:11,fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)",textAlign:"right"}},
+        `última ventana: ${l.incidents}/${l.deaths} muertes · ${l.rate_per_game}/partida · ${pct(l.prop)} IC [${pct(l.ci_low)}–${pct(l.ci_high)}]`,
+        h("br"), `densidad ${l.deaths_per_game} muertes/partida (a la baja = posible sobre-corrección)`)
+    ),
+    h("svg", {viewBox:`0 0 ${W} ${H}`, style:{width:"100%",height:120,marginTop:10,display:"block"}},
+      h("polygon", {points:band, fill:"rgba(239,68,68,0.12)"}),
+      h("line", {x1:PAD, x2:W-PAD, y1:y(prog.goal_prop), y2:y(prog.goal_prop),
+                 stroke:"#22c55e", strokeWidth:1, strokeDasharray:"4 3"}),
+      h("polyline", {points:line, fill:"none", stroke:"#ef4444", strokeWidth:1.5})
+    ),
+    h("div", {style:{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)"}},
+      h("span", null, s[0].date),
+      h("span", null, `meta ${pct(prog.goal_prop)} (1 incidente por 20 muertes)`),
+      h("span", null, s[s.length-1].date)
+    ),
+    verdict && h("div", {style:{fontSize:12,marginTop:8,color:verdict.color}},
+      `Bloques de ${b.block}: ${pct(b.prev.prop)} [${pct(b.prev.ci_low)}–${pct(b.prev.ci_high)}] → `
+      + `${pct(b.last.prop)} [${pct(b.last.ci_low)}–${pct(b.last.ci_high)}] — ${verdict.txt}`)
+  );
+}
+
+function App(){
+  const [stats, setStats] = useState(null);
+  const [decisions, setDecisions] = useState([]);
+  const [patterns, setPatterns] = useState([]);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const [tab, setTab] = useState("decisions");
+  const [acc, setAcc] = useState("both");
+  const [fdet, setFdet] = useState("all");
+  const [fbFilter, setFbFilter] = useState("all");   // all | disagree | agree | none
+  const [sort, setSort] = useState("recent");
+  const [limit, setLimit] = useState(50);
+  const [exp, setExp] = useState(null);
+  const [clipOpen, setClipOpen] = useState(null);
+  const [fbs, setFbs] = useState({});
+  const [matches, setMatches] = useState([]);
+  const [selMatch, setSelMatch] = useState(null);   // null = todas las partidas
+  const [mapData, setMapData] = useState(null);
+  const [vizMode, setVizMode] = useState("map");
+  const [replay, setReplay] = useState(null);       // {available, in_match_start_s} del replay completo
+  const replayRef = useRef(null);
+  const [focusViz, setFocusViz] = useState(null);   // decision id focused (hover) in the map/timeline
+  const [vizOpen, setVizOpen] = useState(null);     // decision expanded INLINE under the map/timeline
+  const [queue, setQueue] = useState(null);         // cola de revisión (/api/review_queue)
+  const [ingest, setIngest] = useState(null);       // salud del pipeline (/api/ingest_status, banner de key muerta)
+  const [progress, setProgress] = useState(null);   // progreso conductual (#10, bloque progress de /api/patterns)
+  const [sessionData, setSessionData] = useState(null);  // Sesion de hoy (#16, /api/session)
+  const [sessionDone, setSessionDone] = useState({});     // ids completados en la tanda actual (vive en App: sobrevive cambios de pestana)
+  const sessionSeen = useRef(new Set());                  // ids mostrados en la tanda (incluye los ya dropeados) para no repetirlos al reemplazar
+  const loadSession = () => fetch("/api/session").then(r=>r.json()).then(d => {
+    sessionSeen.current = new Set((d.moments||[]).map(m=>m.id));
+    setSessionData(d);
+  }).catch(()=>{});
+  // "Traer nuevas": reemplaza SOLO las completadas por momentos nuevos y deja las
+  // que aun no marcaste (la lista no crece). Excluye todo lo ya visto en la tanda
+  // —incluido lo que ya salio de pantalla— porque el server no basta: "guardar
+  // contexto" (nota sin best_option) no marca la decision y volveria a proponerla.
+  const loadMoreSession = () => {
+    const cur = (sessionData && sessionData.moments) || [];
+    const keep = cur.filter(m => !(sessionDone[m.id] || fbs[m.id]));  // sin marcar: se quedan
+    const need = cur.length - keep.length;                            // cuantas completaste = cuantas reemplazar
+    if(need <= 0) return;
+    const exclude = [...sessionSeen.current];
+    fetch("/api/session" + (exclude.length ? "?exclude="+exclude.join(",") : ""))
+      .then(r=>r.json())
+      .then(d => {
+        const fresh = (d.moments||[]).filter(m=>!sessionSeen.current.has(m.id)).slice(0, need);
+        fresh.forEach(m => sessionSeen.current.add(m.id));
+        setSessionData({...d, moments: [...keep, ...fresh], exhausted: fresh.length===0});
+      }).catch(()=>{});
+  };
+  const [jumpId, setJumpId] = useState(null);       // decisión destino de un salto (scroll + resaltado)
+  const jumpRef = useRef(false);                    // suprime el reset de selMatch del cambio de cohort en un salto
+  const loadQueue = () => fetch("/api/review_queue").then(r=>r.json()).then(setQueue).catch(()=>{});
+
+  // Salto directo a una decisión: selecciona cohort/partida, expande la card y
+  // hace scroll. Lo usan la cola de revisión y el deep-link ?dec=ID (los ids
+  // del informe de triaje se vuelven clicables/pegables).
+  const jumpTo = (t) => {
+    const targetAcc = t.cohort==="challenger" ? "challenger" : "both";
+    setTab("decisions");
+    setAcc(prev => { if(prev!==targetAcc) jumpRef.current = true; return targetAcc; });
+    setFdet("all"); setFbFilter("all"); setSort("recent");
+    setSelMatch(t.match); setExp(t.id); setClipOpen(null); setLimit(500); setJumpId(t.id);
+  };
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/stats").then(r=>r.json()),
+      fetch("/api/decisions").then(r=>r.json()),
+      fetch("/api/matches").then(r=>r.json()),
+    ]).then(([s,d,m]) => {
+      setStats(s); setDecisions(d); setMatches(m);
+      const init = {}; d.forEach(x => { if(x.feedback) init[x.id]=x.feedback; });
+      setFbs(init); setLoading(false);
+      const qdec = parseInt(new URLSearchParams(location.search).get("dec"), 10);
+      if(qdec){ const t = d.find(x=>x.id===qdec); if(t) jumpTo({id:t.id, match:t.match, cohort:t.cohort}); }
+    }).catch(e => { setErr(String(e)); setLoading(false); });
+    loadQueue();
+    loadSession();
+    fetch("/api/ingest_status").then(r=>r.json()).then(setIngest).catch(()=>{});
+  }, []);
+
+  useEffect(() => {
+    if(jumpRef.current){ jumpRef.current = false; }   // salto en curso: no resetear la partida elegida
+    else { setSelMatch(null); }
+    fetch("/api/patterns?cohort="+acc).then(r=>r.json())
+      .then(d => { setPatterns(d.patterns||[]); setProgress(d.progress||null); }).catch(()=>{});
+  }, [acc]);
+
+  // Tras un salto, espera a que la card exista en el DOM y haz scroll hasta ella.
+  // Re-scroll a los 900ms: el mapa/replay cargan despues y desplazan el layout,
+  // dejando el primer scroll corto (feedback del jugador).
+  useEffect(() => {
+    if(!jumpId) return;
+    const el = document.getElementById("dec-"+jumpId);
+    if(el){
+      el.scrollIntoView({behavior:"smooth", block:"center"});
+      const t2 = setTimeout(()=>{
+        const el2 = document.getElementById("dec-"+jumpId);
+        if(el2) el2.scrollIntoView({behavior:"smooth", block:"center"});
+      }, 900);
+      const t = setTimeout(()=>setJumpId(null), 2600);
+      return ()=>{ clearTimeout(t); clearTimeout(t2); };
+    }
+  }, [jumpId, selMatch, decisions, limit, tab]);
+
+  useEffect(() => { setLimit(50); }, [acc, fdet, sort, selMatch]);
+
+  useEffect(() => {
+    setFocusViz(null);
+    if(!selMatch){ setMapData(null); setReplay(null); return; }
+    let a = true; setMapData(null); setReplay(null);
+    fetch("/api/match_map?match=" + encodeURIComponent(selMatch))
+      .then(r => r.json()).then(d => { if(a) setMapData(d); }).catch(()=>{});
+    fetch("/api/match_replay?match=" + encodeURIComponent(selMatch))
+      .then(r => r.json()).then(d => { if(a && d.available) setReplay(d); }).catch(()=>{});
+    return () => { a = false; };
+  }, [selMatch]);
+
+  // Seek the match replay to a game moment (timeline/map marker click). The full
+  // Ascent recording starts at in_match_start_s (0 for ascent_full), so
+  // video time = game_time - start. Lands 5s early for context.
+  const seekReplay = (t_ms) => {
+    const v = replayRef.current;
+    if(!v || !replay) return;
+    const t = Math.max(0, t_ms/1000 - (replay.in_match_start_s||0) - 5);
+    try { v.currentTime = t; v.play && v.play().catch(()=>{}); } catch(_){}
+  };
+  const selectViz = (id) => {
+    setVizOpen(id);
+    const d = decisions.find(x=>x.id===id);
+    if(d) seekReplay(d.game_time_ms);
+  };
+
+  const openDec = (id) => { setExp(id); setClipOpen(null); setLimit(l=>Math.max(l,500)); };
+
+  const setFb = (id,v) => {
+    const next = fbs[id]===v ? null : v;
+    setFbs(p => ({...p,[id]:next}));
+    fetch("/api/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,feedback:next})}).catch(()=>{});
+  };
+  const saveContext = (id, payload) => {
+    fetch("/api/feedback",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id, ...payload})}).catch(()=>{});
+  };
+  // Handlers de la Sesion de hoy: igual que los normales pero dejan el momento
+  // como "completada" (la confirmacion no se pierde hasta pedir tanda nueva).
+  const sessionFb = (id, v) => { setSessionDone(s=>({...s,[id]:true})); setFb(id, v); };
+  const sessionSave = (id, payload) => { setSessionDone(s=>({...s,[id]:true})); saveContext(id, payload); };
+  const newSession = () => { setSessionDone({}); loadSession(); };
+  const toggleClip = (id) => setClipOpen(c => c===id ? null : id);
+
+  // "both" = MIS cuentas: los cohorts de referencia (challenger) solo se ven al elegir su chip.
+  const inCohort = d => acc==="both" ? d.cohort!=="challenger" : d.cohort===acc;
+  const fbBase = decisions.filter(d => inCohort(d) && (fdet==="all"||d.detector===fdet) && (!selMatch||d.match===selMatch));
+  const fbCounts = {agree:0, disagree:0, equivalent:0, none:0};
+  fbBase.forEach(d => { const v = fbs[d.id]; fbCounts[v==="agree"?"agree":v==="disagree"?"disagree":v==="equivalent"?"equivalent":"none"]++; });
+  const disagreeByMatch = {}, reviewedByMatch = {};
+  decisions.forEach(d => {
+    if(fbs[d.id]==="disagree") disagreeByMatch[d.match]=(disagreeByMatch[d.match]||0)+1;
+    if(fbs[d.id] || d.feedback_note || d.best_option!=null) reviewedByMatch[d.match]=(reviewedByMatch[d.match]||0)+1;
+  });
+  let shown = fbBase.filter(d => fbFilter==="all" || (fbFilter==="none" ? !fbs[d.id] : fbs[d.id]===fbFilter));
+  if(sort==="gap") shown = [...shown].sort((a,b)=>(b.ev_gap??-1)-(a.ev_gap??-1));
+  const visible = shown.slice(0, limit);
+
+  const shownMatches = matches.filter(m => acc==="both" ? m.cohort!=="challenger" : m.cohort===acc);
+  const selMatchObj = matches.find(m => m.match_id===selMatch);
+  const selMatchLabel = selMatchObj ? `${selMatchObj.champion} · ${selMatchObj.date}` : "";
+
+  const statCards = stats ? [
+    {label:"Partidas",    val:String(stats.matches), sub:Object.entries(stats.by_cohort||{}).filter(([k])=>k).map(([k,v])=>`${v} ${k}`).join(" · ")},
+    {label:"Decisiones",  val:String(stats.decisions), sub:`${stats.detectors} detectores`},
+    {label:"EV promedio", val:stats.ev_taken.toFixed(2), sub:`óptimo ${stats.ev_optimal.toFixed(2)} · gap ${stats.ev_gap.toFixed(2)}`},
+    {label:"Clips",       val:String(stats.clips_decisions), sub:`en ${stats.clips_matches} partidas`},
+    {label:"Feedback",    val:`${stats.feedback}`, sub:`de ${stats.decisions} revisadas`},
+  ] : [];
+
+  if(loading) return h("div",{style:{padding:"60px 0",textAlign:"center",color:"var(--color-text-tertiary)"}},"Cargando…");
+  if(err) return h("div",{style:{padding:"40px 0",color:"var(--color-text-danger)"}}, "Error: "+err);
+
+  return h("div", null,
+    // Banner de pipeline muerto (#11): la key expirada de 2026-06 paso 7 dias en
+    // silencio porque key_alive solo vivia en ingest_status.json.
+    ingest && ingest.key_alive===false && h("div", {style:{background:"rgba(239,68,68,0.10)",border:"0.5px solid rgba(239,68,68,0.45)",color:"var(--color-text-danger)",borderRadius:"var(--border-radius-md)",padding:"10px 14px",marginBottom:16,fontSize:13,lineHeight:1.5}},
+      h("b", null, "API key de Riot muerta"),
+      ` — ingesta parada${ingest.days_since_ingest!=null ? ` hace ${ingest.days_since_ingest} día${ingest.days_since_ingest===1?"":"s"}` : ""}` +
+      `${ingest.last_ingested_utc ? ` (última partida ingestada: ${String(ingest.last_ingested_utc).slice(0,10)})` : ""}. ` +
+      "Renueva la key en developer.riotgames.com y pégala en config.toml; auto_ingest se pone al día solo."
+    ),
+    h("div", {style:{display:"flex",alignItems:"center",justifyContent:"space-between",paddingBottom:16,marginBottom:20,borderBottom:"0.5px solid var(--color-border-tertiary)",flexWrap:"wrap",gap:10}},
+      h("div", null,
+        h("div", {style:{fontSize:16,fontWeight:500}}, "lol-coach"),
+        h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",fontFamily:"var(--font-mono)",marginTop:2}}, `${stats.patch ? "parche "+stats.patch+" · " : ""}${stats.matches} partidas · ${stats.decisions} decisiones`)
+      ),
+      h("div", {style:{display:"flex",gap:4,flexWrap:"wrap"}},
+        ...[{key:"both",label:"Mis cuentas"}, ...Object.keys(stats.by_cohort||{}).filter(k=>k).sort().map(k=>({key:k,label:COHORT_LABELS[k]||k}))]
+          .map(a => h("button", {key:a.key, onClick:()=>setAcc(a.key), style:sBadge(acc===a.key)}, a.label))
+      )
+    ),
+    h("div", {style:{display:"grid",gridTemplateColumns:"repeat(5,minmax(0,1fr))",gap:8,marginBottom:24}},
+      ...statCards.map(s => h(StatCard, {key:s.label, ...s}))
+    ),
+    h("div", {style:{display:"flex",gap:4,marginBottom:16}},
+      ...[{key:"session",label:"Sesión de hoy"},
+          {key:"decisions",label:"Decisiones"},{key:"patterns",label:"Patrones"},{key:"calibrate",label:"Calibrar"},
+          {key:"review",label: queue&&queue.n_disagree ? `Revisión (${queue.n_disagree})` : "Revisión"}]
+        .map(t => h("button", {key:t.key, onClick:()=>setTab(t.key), style:{...sBadge(tab===t.key),padding:"7px 14px",fontSize:13}}, t.label))
+    ),
+    tab==="decisions" && h("div", {style:{display:"flex",gap:16,alignItems:"flex-start"}},
+      // Vista 1: sidebar de partidas
+      h("div", {style:{width:210,flexShrink:0,maxHeight:"75vh",overflowY:"auto",position:"sticky",top:8}},
+        h("div", {style:{fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)",marginBottom:8}}, "Partidas"),
+        h("button", {onClick:()=>setSelMatch(null),
+          style:{...sBadge(selMatch===null),display:"block",width:"100%",textAlign:"left",padding:"8px 10px",marginBottom:6,fontSize:12,border:"0.5px solid var(--color-border-tertiary)"}},
+          `Todas (${shownMatches.reduce((a,m)=>a+m.decisions_count,0)} decisiones)`),
+        ...shownMatches.map(m => h(MatchItem, {key:m.match_id, m, active:selMatch===m.match_id, disagree:disagreeByMatch[m.match_id]||0, reviewed:reviewedByMatch[m.match_id]||0, onClick:()=>setSelMatch(m.match_id)}))
+      ),
+      // Vista 2: decisiones del match (o de todos), ordenadas por game_time_ms
+      h("div", {style:{flex:1,minWidth:0}},
+        h("div", {style:{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap",alignItems:"center"}},
+          h("button", {onClick:()=>setFdet("all"), style:{...sBadge(fdet==="all"),fontSize:11,padding:"4px 10px"}}, "Todos"),
+          ...Object.entries(DET).map(([k,dd]) => h("button", {key:k, onClick:()=>setFdet(k),
+            style:{fontSize:11,padding:"4px 10px",borderRadius:"var(--border-radius-md)",
+              border: fdet===k ? `0.5px solid ${dd.acc}55` : "0.5px solid transparent",
+              background: fdet===k ? `${dd.acc}14` : "transparent",
+              color: fdet===k ? dd.acc : "var(--color-text-tertiary)"}}, dd.label)),
+          h("div", {style:{marginLeft:"auto",display:"flex",gap:4}},
+            ...[{key:"recent",label:"Cronológico"},{key:"gap",label:"Mayor gap EV"}]
+              .map(s => h("button", {key:s.key, onClick:()=>setSort(s.key), style:{...sBadge(sort===s.key),fontSize:11,padding:"4px 10px"}}, s.label))
+          )
+        ),
+        ((fbCounts.agree + fbCounts.disagree + fbCounts.equivalent) > 0 || fbFilter !== "all") && h("div",
+          {style:{display:"flex",gap:5,marginBottom:10,alignItems:"center",flexWrap:"wrap"}},
+          h("span", {style:{fontSize:10,color:"var(--color-text-tertiary)",textTransform:"uppercase",letterSpacing:"0.04em",marginRight:2}}, "Veredicto"),
+          ...[
+            {k:"all",        l:`Todas (${fbBase.length})`,               c:"var(--color-text-secondary)", bg:"var(--color-background-tertiary)"},
+            {k:"disagree",   l:`✕ se equivoca (${fbCounts.disagree})`,   c:"var(--color-text-danger)",    bg:"var(--color-background-danger)"},
+            {k:"equivalent", l:`≈ equivalentes (${fbCounts.equivalent})`,c:"var(--color-text-info)",      bg:"var(--color-background-info)"},
+            {k:"agree",      l:`✓ acierta (${fbCounts.agree})`,          c:"var(--color-text-success)",   bg:"var(--color-background-success)"},
+            {k:"none",       l:`sin revisar (${fbCounts.none})`,         c:"var(--color-text-tertiary)",  bg:"var(--color-background-tertiary)"},
+          ].map(o => h("button", {key:o.k, onClick:()=>setFbFilter(o.k),
+            style:{fontSize:11,fontWeight:fbFilter===o.k?700:500,padding:"3px 10px",borderRadius:"var(--border-radius-md)",cursor:"pointer",
+              border: fbFilter===o.k ? `0.5px solid ${o.c}` : "0.5px solid transparent",
+              background: fbFilter===o.k ? o.bg : "transparent",
+              color: fbFilter===o.k ? o.c : "var(--color-text-tertiary)"}}, o.l))),
+        h("div", {style:{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:12,fontFamily:"var(--font-mono)"}},
+          (selMatch ? selMatchLabel+" · " : "") + `${shown.length} decisiones`),
+        selMatch && h("div", {style:{marginBottom:4}},
+          h("div", {style:{display:"flex",gap:4,marginBottom:8}},
+            ...[{k:"map",l:"Mapa"},{k:"timeline",l:"Línea de tiempo"},{k:"winprob",l:"Ventaja"}].map(v =>
+              h("button", {key:v.k, onClick:()=>setVizMode(v.k), style:{...sBadge(vizMode===v.k),fontSize:11,padding:"4px 10px"}}, v.l))
+          ),
+          !mapData ? h("div", {className:"muted", style:{fontSize:11,padding:"8px 0"}}, "Cargando…")
+            : h("div", null,
+                vizMode==="map"
+                  ? h(MatchMap, {data:mapData, fdet, expId:focusViz||vizOpen, onSelect:selectViz, onHover:setFocusViz})
+                  : vizMode==="timeline"
+                    ? h(MatchTimeline, {data:mapData, fdet, expId:focusViz||vizOpen, onSelect:selectViz, onHover:setFocusViz})
+                    : h(WinProbChart, {data:mapData}),
+                // Replay completo sincronizado: clic en un marcador del mapa/línea
+                // de tiempo busca ese momento en el video (5s antes para contexto).
+                replay && vizMode!=="winprob" && h("div", {style:{marginTop:8}},
+                  h("video", {ref:replayRef, controls:true, preload:"metadata",
+                    src:"/replay?match="+encodeURIComponent(selMatch), style:{maxHeight:300}}),
+                  h("div", {className:"muted", style:{fontSize:10,marginTop:2}},
+                    "Replay de la partida — cada punto de la viz es una decisión; clic = saltar a ese momento del video")),
+                vizMode!=="winprob" && !vizOpen && h(VizAnnotation, {d:decisions.find(x=>x.id===focusViz), onOpen:selectViz}),
+                vizMode!=="winprob" && vizOpen && decisions.find(x=>x.id===vizOpen) && h(DecisionCard, {
+                  key:"viz-"+vizOpen, d:decisions.find(x=>x.id===vizOpen), exp:true,
+                  onToggle:()=>setVizOpen(null), fb:fbs[vizOpen], onFb:setFb,
+                  clipOpen:clipOpen===vizOpen, onClip:toggleClip, onSave:saveContext})
+              )
+        ),
+        selMatch && h(SimilarMatches, {match:selMatch, onSelect:setSelMatch}),
+        selMatch && h("div", {style:{borderTop:"0.5px solid var(--color-border-secondary)",marginTop:20,paddingTop:14,marginBottom:10,fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",color:"var(--color-text-tertiary)"}}, `Decisiones de la partida · ${shown.length}`),
+        shown.length===0
+          ? h("div", {style:{textAlign:"center",color:"var(--color-text-tertiary)",padding:"40px 0",fontSize:13}}, "Sin decisiones para este filtro")
+          : h("div", null,
+              ...visible.map(d => h(DecisionCard, {key:d.id, d, exp:exp===d.id,
+                domId:"dec-"+d.id, highlight:jumpId===d.id,
+                onToggle:()=>setExp(exp===d.id?null:d.id), fb:fbs[d.id], onFb:setFb,
+                clipOpen:clipOpen===d.id, onClip:toggleClip, onSave:saveContext})),
+              shown.length>limit && h("button", {onClick:()=>setLimit(l=>l+50),
+                style:{...sBadge(false),width:"100%",padding:"10px",marginTop:6,fontSize:12,border:"0.5px solid var(--color-border-tertiary)"}},
+                `Mostrar más (${shown.length-limit} restantes)`)
+            )
+      )
+    ),
+    tab==="session" && h(SessionView, {data:sessionData, done:sessionDone, decisions, fbs,
+      onFb:sessionFb, onSave:sessionSave, onJump:jumpTo, onRefresh:newSession, onMore:loadMoreSession}),
+    tab==="patterns" && h("div", null,
+      h(ProgressCard, {prog: progress}),
+      patterns.length===0
+        ? h("div", {style:{textAlign:"center",color:"var(--color-text-tertiary)",padding:"40px 0",fontSize:13}}, "Sin patrones detectados para esta cuenta")
+        : patterns.map(p => h(PatternCard, {key:p.id, p}))
+    ),
+    tab==="calibrate" && h(Calibrate),
+    tab==="review" && h(ReviewQueue, {queue, onJump:jumpTo, onRefresh:loadQueue,
+      decisions, fbs, onFb:setFb, onSave:saveContext})
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>

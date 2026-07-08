@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local config with secrets (Riot API key, summoner name)
+config.toml
+
+# Captured data — never commit gameplay JSONs
+data/raw/
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/*.db.bak*
+data/backups/
+data/ingest.log
+data/ingest_status.json
+data/puuids.json
+
+# OS / editor
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
