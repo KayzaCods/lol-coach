@@ -24,13 +24,23 @@ dominant pattern is **over-extending while ahead**.
 
 ## Screenshots
 
-<!-- Add screenshots to docs/img/ and reference them here. Suggested captures:
-     - the Patterns tab with the behavioral-progress card
-     - "Today's session" with an expanded decision card
-     - a decision card showing options + EV + the written argument
-     Make sure no Riot IDs are visible in the captures. -->
+> The dashboard UI is in Spanish (I'm the target user). Captions below explain each view.
 
-_Dashboard screenshots coming soon._
+**The dashboard** — every ranked game broken into decision points, each scored by the evaluation function (HEF), filterable by type and by whether I agreed with the engine's call.
+
+![Dashboard overview: stat tiles and the decision list](docs/img/overview.png)
+
+**Each decision becomes an argument** — not a flag. Context, the options with their expected value, the written argument for what was optimal, and the feedback controls that train the preference model. (Here the engine judged an "engage that paid off" as the highest-EV play despite the death — the result is explained by other factors.)
+
+![An expanded decision card with options, EV, and the written argument](docs/img/decision-card.png)
+
+**Honest progress measurement** — the dominant pattern tracked over a moving window with a Wilson confidence interval. When the intervals overlap, the verdict is "no distinguishable change yet" instead of a cherry-picked win.
+
+![Behavioral-progress card and pattern breakdown](docs/img/progress.png)
+
+**A curated review session** — an anti-bias mix of unmarked moments (dominant pattern by worst EV gap, an expensive objective, a hard correct call, and variety) to review without doomscrolling.
+
+![Today's session: a curated set of moments to review](docs/img/session.png)
 
 ---
 
